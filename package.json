@@ -5,25 +5,23 @@
   "type": "module",
   "scripts": {
     "dev": "node server.cjs",
-    "build": "vite build",
+    "build": "npx vite build",
     "preview": "vite preview",
     "server": "node server.cjs"
   },
   "dependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
     "canvas-confetti": "^1.9.4",
     "express": "^4.21.2",
     "lucide-react": "^0.460.0",
-    "peerjs": "^1.5.5",
+    "peerjs": "^1.5.4",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "socket.io": "^4.8.1",
-    "socket.io-client": "^4.8.1"
-  },
-  "devDependencies": {
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
+    "socket.io-client": "^4.8.1",
     "vite": "^6.1.0"
   }
 }
