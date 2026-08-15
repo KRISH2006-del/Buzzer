@@ -1,8 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import HostDashboard from './components/HostDashboard';
 import PlayerView from './components/PlayerView';
 import StageView from './components/StageView';
-import { initSocketConnection, getSocket, broadcastLocal } from './utils/sync';
+import { 
+  initSocketConnection, 
+  initPeerHostRoom, 
+  initPeerPlayerRoom, 
+  broadcastPeerState, 
+  sendPlayerAction, 
+  broadcastLocal 
+} from './utils/sync';
 import { Shield, Users, Radio, Smartphone, ExternalLink, MonitorPlay } from 'lucide-react';
 
 export default function App() {
@@ -13,6 +20,12 @@ export default function App() {
     if (params.get('mode') === 'player') return 'player';
     if (params.get('mode') === 'stage') return 'stage';
     return 'select';
+  });
+
+  // Global Room ID (default 'live', or from URL ?room=xyz)
+  const [roomId, setRoomId] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('room') || 'live';
   });
 
   // Global Buzzer Application State
@@ -31,170 +44,203 @@ export default function App() {
     qrCodeDataUrl: ''
   });
 
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
   const [socket, setSocket] = useState(null);
 
-  // Initialize Socket connection and sync engine
+  // Initialize Socket connection (for localhost Node server)
   useEffect(() => {
     const sock = initSocketConnection(
       (newState) => {
         setState((prev) => ({ ...prev, ...newState }));
       },
       (pressData) => {
-        // High priority live press update
         setState((prev) => ({
           ...prev,
           buzzerPresses: pressData.buzzerPresses
         }));
       }
     );
-
     setSocket(sock);
   }, []);
 
-  // Action Dispatchers (works via Socket.io when connected, with local fallback)
+  // Initialize WebRTC P2P Sync engine based on active View Mode
+  useEffect(() => {
+    if (viewMode === 'host' || viewMode === 'select' || viewMode === 'stage') {
+      // Host Laptop initializes WebRTC Peer Room to receive mobile players
+      initPeerHostRoom(
+        roomId,
+        (actionType, payload) => {
+          handleHostReceivePlayerAction(actionType, payload);
+        },
+        () => stateRef.current
+      );
+    } else if (viewMode === 'player') {
+      // Mobile Player connects to Host Laptop Peer Room
+      initPeerPlayerRoom(
+        roomId,
+        (newState) => {
+          setState((prev) => ({ ...prev, ...newState }));
+        },
+        (pressData) => {
+          setState((prev) => ({
+            ...prev,
+            buzzerPresses: pressData.buzzerPresses
+          }));
+        }
+      );
+    }
+  }, [viewMode, roomId]);
+
+  // Host Action Handler for incoming Mobile Player Actions
+  const handleHostReceivePlayerAction = (actionType, payload) => {
+    if (actionType === 'PRESS_BUZZER') {
+      processBuzzerPress(payload);
+    } else if (actionType === 'ADD_TEAM') {
+      processAddTeam(payload);
+    }
+  };
+
+  // Process Add Team on Host
+  const processAddTeam = (teamData) => {
+    const currentState = stateRef.current;
+    const newTeam = {
+      id: 't_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+      name: teamData.name || 'New Team',
+      color: teamData.color || '#6366f1',
+      score: 0
+    };
+    const updatedState = { ...currentState, teams: [...currentState.teams, newTeam] };
+    setState(updatedState);
+    broadcastPeerState(updatedState);
+  };
+
+  // Process Buzzer Press on Host
+  const processBuzzerPress = (payload) => {
+    const currentState = stateRef.current;
+    const now = Date.now();
+
+    // Prevent duplicate buzzes from same team in same round
+    if (currentState.buzzerPresses.some(p => p.teamId === payload.teamId)) return;
+
+    const dateObj = new Date(now);
+    const formattedTime = dateObj.toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    }) + '.' + String(dateObj.getMilliseconds()).padStart(3, '0');
+
+    const firstPressMs = currentState.buzzerPresses.length > 0 ? currentState.buzzerPresses[0].timestampMs : now;
+    const timeDiffMs = now - firstPressMs;
+
+    const newPress = {
+      teamId: payload.teamId,
+      teamName: payload.teamName || 'Unknown Team',
+      timestampMs: now,
+      formattedTime,
+      timeDiffMs,
+      isFalseStart: !currentState.buzzerOpen,
+      rank: currentState.buzzerPresses.length + 1
+    };
+
+    const updatedPresses = [...currentState.buzzerPresses, newPress];
+    const updatedState = { ...currentState, buzzerPresses: updatedPresses };
+
+    setState(updatedState);
+    broadcastPeerState(updatedState);
+  };
+
+  // App Level Dispatchers
   const handleAddTeam = (teamData) => {
-    if (socket && socket.connected) {
-      socket.emit('add-team', teamData);
+    if (viewMode === 'player') {
+      sendPlayerAction('ADD_TEAM', teamData);
     } else {
-      const newTeam = {
-        id: 't_' + Date.now(),
-        name: teamData.name,
-        color: teamData.color || '#6366f1',
-        score: 0
-      };
-      const updatedState = { ...state, teams: [...state.teams, newTeam] };
-      setState(updatedState);
-      broadcastLocal('STATE_UPDATE', updatedState);
+      processAddTeam(teamData);
     }
   };
 
   const handleUpdateTeam = (updatedTeam) => {
-    if (socket && socket.connected) {
-      socket.emit('update-team', updatedTeam);
-    } else {
-      const updatedTeams = state.teams.map(t => t.id === updatedTeam.id ? { ...t, ...updatedTeam } : t);
-      const updatedState = { ...state, teams: updatedTeams };
-      setState(updatedState);
-      broadcastLocal('STATE_UPDATE', updatedState);
-    }
+    const updatedTeams = state.teams.map(t => t.id === updatedTeam.id ? { ...t, ...updatedTeam } : t);
+    const updatedState = { ...state, teams: updatedTeams };
+    setState(updatedState);
+    broadcastPeerState(updatedState);
   };
 
   const handleDeleteTeam = (teamId) => {
-    if (socket && socket.connected) {
-      socket.emit('delete-team', teamId);
-    } else {
-      const updatedTeams = state.teams.filter(t => t.id !== teamId);
-      const updatedPresses = state.buzzerPresses.filter(p => p.teamId !== teamId);
-      const updatedState = { ...state, teams: updatedTeams, buzzerPresses: updatedPresses };
-      setState(updatedState);
-      broadcastLocal('STATE_UPDATE', updatedState);
-    }
+    const updatedTeams = state.teams.filter(t => t.id !== teamId);
+    const updatedPresses = state.buzzerPresses.filter(p => p.teamId !== teamId);
+    const updatedState = { ...state, teams: updatedTeams, buzzerPresses: updatedPresses };
+    setState(updatedState);
+    broadcastPeerState(updatedState);
   };
 
   const handleUpdateScore = (teamId, delta) => {
-    if (socket && socket.connected) {
-      socket.emit('update-score', { teamId, delta });
-    } else {
-      const updatedTeams = state.teams.map(t => {
-        if (t.id === teamId) return { ...t, score: (t.score || 0) + delta };
-        return t;
-      });
-      const updatedState = { ...state, teams: updatedTeams };
-      setState(updatedState);
-      broadcastLocal('STATE_UPDATE', updatedState);
-    }
+    const updatedTeams = state.teams.map(t => {
+      if (t.id === teamId) return { ...t, score: (t.score || 0) + delta };
+      return t;
+    });
+    const updatedState = { ...state, teams: updatedTeams };
+    setState(updatedState);
+    broadcastPeerState(updatedState);
   };
 
   const handleResetBuzzer = () => {
-    if (socket && socket.connected) {
-      socket.emit('reset-buzzer');
-    } else {
-      const updatedState = {
-        ...state,
-        buzzerOpen: true,
-        buzzerPresses: [],
-        roundId: state.roundId + 1,
-        countdown: null
-      };
-      setState(updatedState);
-      broadcastLocal('STATE_UPDATE', updatedState);
-    }
+    const updatedState = {
+      ...state,
+      buzzerOpen: true,
+      buzzerPresses: [],
+      roundId: state.roundId + 1,
+      countdown: null
+    };
+    setState(updatedState);
+    broadcastPeerState(updatedState);
   };
 
   const handleToggleLock = (isOpen) => {
-    if (socket && socket.connected) {
-      socket.emit('toggle-buzzer-lock', isOpen);
-    } else {
-      const updatedState = { ...state, buzzerOpen: isOpen, countdown: null };
-      setState(updatedState);
-      broadcastLocal('STATE_UPDATE', updatedState);
-    }
+    const updatedState = { ...state, buzzerOpen: isOpen, countdown: null };
+    setState(updatedState);
+    broadcastPeerState(updatedState);
   };
 
-  const handleStartCountdown = (seconds) => {
-    if (socket && socket.connected) {
-      socket.emit('start-countdown', seconds);
-    } else {
-      let current = seconds;
-      const updatedState = { ...state, buzzerOpen: false, countdown: current };
-      setState(updatedState);
+  const handleStartCountdown = (seconds = 30) => {
+    let current = seconds;
+    const initialCountdownState = { ...state, buzzerOpen: false, countdown: current };
+    setState(initialCountdownState);
+    broadcastPeerState(initialCountdownState);
 
-      const interval = setInterval(() => {
-        current -= 1;
-        if (current > 0) {
-          setState(prev => ({ ...prev, countdown: current }));
-        } else {
-          clearInterval(interval);
-          const finalState = { ...state, buzzerOpen: true, countdown: 0 };
-          setState(finalState);
-          broadcastLocal('STATE_UPDATE', finalState);
-        }
-      }, 1000);
-    }
+    const interval = setInterval(() => {
+      current -= 1;
+      if (current > 0) {
+        setState(prev => {
+          const s = { ...prev, countdown: current };
+          broadcastPeerState(s);
+          return s;
+        });
+      } else {
+        clearInterval(interval);
+        setState(prev => {
+          const finalState = { ...prev, buzzerOpen: true, countdown: null };
+          broadcastPeerState(finalState);
+          return finalState;
+        });
+      }
+    }, 1000);
   };
 
   const handlePressBuzzer = (payload) => {
-    if (socket && socket.connected) {
-      socket.emit('press-buzzer', payload);
+    if (viewMode === 'player') {
+      sendPlayerAction('PRESS_BUZZER', payload);
     } else {
-      const now = Date.now();
-      if (state.buzzerPresses.some(p => p.teamId === payload.teamId)) return;
-
-      const dateObj = new Date(now);
-      const formattedTime = dateObj.toLocaleTimeString('en-US', {
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      }) + '.' + String(dateObj.getMilliseconds()).padStart(3, '0');
-
-      const firstPressMs = state.buzzerPresses.length > 0 ? state.buzzerPresses[0].timestampMs : now;
-      const timeDiffMs = now - firstPressMs;
-
-      const newPress = {
-        teamId: payload.teamId,
-        teamName: payload.teamName,
-        timestampMs: now,
-        formattedTime,
-        timeDiffMs,
-        isFalseStart: !state.buzzerOpen,
-        rank: state.buzzerPresses.length + 1
-      };
-
-      const updatedPresses = [...state.buzzerPresses, newPress];
-      const updatedState = { ...state, buzzerPresses: updatedPresses };
-      setState(updatedState);
-      broadcastLocal('STATE_UPDATE', updatedState);
-      broadcastLocal('BUZZER_PRESSED', { press: newPress, buzzerPresses: updatedPresses });
+      processBuzzerPress(payload);
     }
   };
 
-  // Open separate window in player mode for local multi-window testing
   const openPlayerWindow = () => {
     window.open(`${window.location.origin}?mode=player`, '_blank', 'width=450,height=750');
   };
 
-  // Open separate stage view window for TV / Projector
   const openStageWindow = () => {
     window.open(`${window.location.origin}?mode=stage`, '_blank', 'width=1280,height=720');
   };
@@ -287,11 +333,10 @@ export default function App() {
               Online Real-Time Event Buzzer
             </h1>
             <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem', maxWidth: '650px', margin: '0 auto 40px auto' }}>
-              Host quiz shows, event competitions, and trivia games with dynamic team names, millisecond-accurate timestamp logging, and live multi-device synchronization.
+              Host quiz shows, event competitions, and trivia games with dynamic team names, millisecond-accurate timestamp logging, and live multi-device WebRTC synchronization.
             </p>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '20px' }}>
-              {/* Host Screen Choice */}
               <div 
                 className="glass-panel" 
                 style={{ padding: '28px', textAlign: 'center', cursor: 'pointer', transition: 'transform 0.2s ease' }}
@@ -307,7 +352,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Projector / Stage View Choice */}
               <div 
                 className="glass-panel" 
                 style={{ padding: '28px', textAlign: 'center', cursor: 'pointer', transition: 'transform 0.2s ease' }}
@@ -323,7 +367,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Player View Choice */}
               <div 
                 className="glass-panel" 
                 style={{ padding: '28px', textAlign: 'center', cursor: 'pointer', transition: 'transform 0.2s ease' }}

@@ -1,7 +1,7 @@
 import { io } from 'socket.io-client';
 import Peer from 'peerjs';
 
-// Local BroadcastChannel for multi-tab fallback when server is not used
+// Local BroadcastChannel for multi-tab fallback on same browser
 const broadcastChannel = typeof BroadcastChannel !== 'undefined' 
   ? new BroadcastChannel('buzzerx_channel') 
   : null;
@@ -10,36 +10,35 @@ let socket = null;
 let peer = null;
 let peerConnections = [];
 let hostPeerConnection = null;
+let isHostPeer = false;
 
+// 1. Localhost Socket.io Connection (if local Node server is running)
 export function initSocketConnection(onStateChange, onBuzzerPressed) {
-  // Check if we are on localhost with a active Socket.io server
   if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
     try {
       const serverUrl = window.location.origin;
       socket = io(serverUrl, {
         transports: ['websocket', 'polling'],
-        reconnectionAttempts: 3,
-        timeout: 3000
+        reconnectionAttempts: 2,
+        timeout: 2000
       });
 
       socket.on('connect', () => {
-        console.log('✅ Connected to local WebSocket server');
+        console.log('✅ Connected to local Node WebSocket server');
       });
 
       socket.on('state-sync', (data) => {
         if (onStateChange) onStateChange(data);
-        localStorage.setItem('buzzerx_state', JSON.stringify(data));
       });
 
       socket.on('buzzer-pressed', (data) => {
         if (onBuzzerPressed) onBuzzerPressed(data);
       });
     } catch (e) {
-      console.warn('Socket.io connection bypassed or failed, using P2P / BroadcastChannel');
+      console.warn('Socket.io connection bypassed, using PeerJS P2P fallback');
     }
   }
 
-  // Listen to BroadcastChannel for local cross-tab fallback
   if (broadcastChannel) {
     broadcastChannel.onmessage = (event) => {
       const { type, payload } = event.data;
@@ -54,35 +53,43 @@ export function initSocketConnection(onStateChange, onBuzzerPressed) {
   return socket;
 }
 
-// PeerJS P2P Room Synchronization for Vercel Cloud Deployment
-export function initPeerHostRoom(roomId, onStateChange, onBuzzerPressed, getCurrentState) {
-  if (peer) peer.destroy();
+// 2. Host PeerJS Initialization (Runs on Host Laptop)
+export function initPeerHostRoom(roomId, onActionReceived, getCurrentState) {
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+  }
 
+  isHostPeer = true;
   const peerId = `buzzerx-room-${roomId}`;
+
+  // Use public PeerJS signaling cloud server
   peer = new Peer(peerId, {
-    debug: 1
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' }
+      ]
+    }
   });
 
   peer.on('open', (id) => {
-    console.log('✅ PeerJS Host Room active:', id);
+    console.log('✅ Host Peer Room Active:', id);
   });
 
   peer.on('connection', (conn) => {
+    console.log('📱 Mobile Player connected to Host:', conn.peer);
     peerConnections.push(conn);
 
     conn.on('open', () => {
-      // Send current state to newly joined player
-      const state = getCurrentState();
-      conn.send({ type: 'STATE_SYNC', payload: state });
+      // Immediately sync current host state to newly connected mobile player
+      const currentState = getCurrentState();
+      conn.send({ type: 'STATE_SYNC', payload: currentState });
     });
 
     conn.on('data', (data) => {
-      const { type, payload } = data;
-      if (type === 'PRESS_BUZZER') {
-        if (onBuzzerPressed) onBuzzerPressed(payload);
-      } else if (type === 'ADD_TEAM') {
-        // Handled in host handler
-      }
+      console.log('📩 Host received action from mobile:', data);
+      if (onActionReceived) onActionReceived(data.type, data.payload);
     });
 
     conn.on('close', () => {
@@ -90,31 +97,44 @@ export function initPeerHostRoom(roomId, onStateChange, onBuzzerPressed, getCurr
     });
   });
 
+  peer.on('error', (err) => {
+    console.warn('PeerJS Host Error:', err);
+    // If peer ID is already taken, host is already active
+  });
+
   return peer;
 }
 
-export function broadcastPeerState(state) {
-  peerConnections.forEach(conn => {
-    if (conn.open) {
-      conn.send({ type: 'STATE_SYNC', payload: state });
+// 3. Player PeerJS Initialization (Runs on Mobile Phone)
+export function initPeerPlayerRoom(roomId, onStateChange, onBuzzerPressed) {
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+  }
+
+  isHostPeer = false;
+  peer = new Peer({
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' }
+      ]
     }
   });
-}
 
-export function initPeerPlayerRoom(roomId, onStateChange, onBuzzerPressed) {
-  if (peer) peer.destroy();
-
-  peer = new Peer({ debug: 1 });
-
-  peer.on('open', () => {
+  peer.on('open', (playerPeerId) => {
+    console.log('📱 Mobile Player Peer Ready:', playerPeerId);
     const hostPeerId = `buzzerx-room-${roomId}`;
+
+    // Connect to Host Laptop Peer
     hostPeerConnection = peer.connect(hostPeerId);
 
     hostPeerConnection.on('open', () => {
-      console.log('✅ Connected to Host Peer Room:', hostPeerId);
+      console.log('⚡ Connected to Host Laptop Peer:', hostPeerId);
     });
 
     hostPeerConnection.on('data', (data) => {
+      console.log('📩 Mobile received state from Host:', data);
       const { type, payload } = data;
       if (type === 'STATE_SYNC' && onStateChange) {
         onStateChange(payload);
@@ -122,14 +142,48 @@ export function initPeerPlayerRoom(roomId, onStateChange, onBuzzerPressed) {
         onBuzzerPressed(payload);
       }
     });
+
+    hostPeerConnection.on('close', () => {
+      console.warn('Disconnected from Host Peer');
+    });
+  });
+
+  peer.on('error', (err) => {
+    console.warn('PeerJS Player Error:', err);
   });
 
   return peer;
 }
 
-export function sendPlayerPeerAction(type, payload) {
+// 4. Broadcast updated state from Host to all connected mobile devices
+export function broadcastPeerState(state) {
+  if (!isHostPeer) return;
+  peerConnections.forEach(conn => {
+    if (conn && conn.open) {
+      conn.send({ type: 'STATE_SYNC', payload: state });
+    }
+  });
+
+  // Also broadcast via BroadcastChannel for multi-tab fallback
+  if (broadcastChannel) {
+    broadcastChannel.postMessage({ type: 'STATE_UPDATE', payload: state });
+  }
+}
+
+// 5. Send action from Mobile Player to Host Laptop
+export function sendPlayerAction(type, payload) {
+  if (socket && socket.connected) {
+    socket.emit(type.toLowerCase().replace('_', '-'), payload);
+    return;
+  }
+
   if (hostPeerConnection && hostPeerConnection.open) {
     hostPeerConnection.send({ type, payload });
+  } else {
+    console.warn('Host connection not open, broadcasting locally');
+    if (broadcastChannel) {
+      broadcastChannel.postMessage({ type: type === 'PRESS_BUZZER' ? 'BUZZER_PRESSED' : 'STATE_UPDATE', payload });
+    }
   }
 }
 
