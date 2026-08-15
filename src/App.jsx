@@ -10,7 +10,7 @@ import {
   sendPlayerAction, 
   broadcastLocal 
 } from './utils/sync';
-import { Shield, Users, Radio, Smartphone, ExternalLink, MonitorPlay } from 'lucide-react';
+import { Shield, Users, Radio, Smartphone, ExternalLink, MonitorPlay, Wifi, WifiOff } from 'lucide-react';
 
 export default function App() {
   // Navigation mode: 'select' | 'host' | 'player' | 'stage'
@@ -22,11 +22,15 @@ export default function App() {
     return 'select';
   });
 
-  // Global Room ID (default 'live', or from URL ?room=xyz)
+  // Global Room ID (default 'live' or from URL ?room=xyz)
   const [roomId, setRoomId] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('room') || 'live';
   });
+
+  // Connection Status Tracking
+  const [connectedPeersCount, setConnectedPeersCount] = useState(0);
+  const [isPlayerConnectedToHost, setIsPlayerConnectedToHost] = useState(false);
 
   // Global Buzzer Application State
   const [state, setState] = useState({
@@ -40,7 +44,7 @@ export default function App() {
     ],
     buzzerPresses: [],
     countdown: null,
-    localUrl: window.location.origin,
+    localUrl: `${window.location.origin}?mode=player&room=${roomId}`,
     qrCodeDataUrl: ''
   });
 
@@ -74,7 +78,10 @@ export default function App() {
         (actionType, payload) => {
           handleHostReceivePlayerAction(actionType, payload);
         },
-        () => stateRef.current
+        () => stateRef.current,
+        (peerCount) => {
+          setConnectedPeersCount(peerCount);
+        }
       );
     } else if (viewMode === 'player') {
       // Mobile Player connects to Host Laptop Peer Room
@@ -88,6 +95,9 @@ export default function App() {
             ...prev,
             buzzerPresses: pressData.buzzerPresses
           }));
+        },
+        (isConnected) => {
+          setIsPlayerConnectedToHost(isConnected);
         }
       );
     }
@@ -238,11 +248,11 @@ export default function App() {
   };
 
   const openPlayerWindow = () => {
-    window.open(`${window.location.origin}?mode=player`, '_blank', 'width=450,height=750');
+    window.open(`${window.location.origin}?mode=player&room=${roomId}`, '_blank', 'width=450,height=750');
   };
 
   const openStageWindow = () => {
-    window.open(`${window.location.origin}?mode=stage`, '_blank', 'width=1280,height=720');
+    window.open(`${window.location.origin}?mode=stage&room=${roomId}`, '_blank', 'width=1280,height=720');
   };
 
   return (
@@ -277,6 +287,42 @@ export default function App() {
           <span style={{ fontFamily: 'var(--font-heading)', fontWeight: 800, fontSize: '1.2rem', color: '#fff' }}>
             BuzzerX Live
           </span>
+
+          {/* Connection Status Badge */}
+          {viewMode === 'host' && (
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '999px',
+              fontSize: '0.8rem',
+              fontWeight: 700,
+              backgroundColor: connectedPeersCount > 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+              color: connectedPeersCount > 0 ? '#10b981' : '#f59e0b',
+              border: `1px solid ${connectedPeersCount > 0 ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`
+            }}>
+              <Wifi size={14} /> Mobile Devices Connected: {connectedPeersCount}
+            </span>
+          )}
+
+          {viewMode === 'player' && (
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '999px',
+              fontSize: '0.8rem',
+              fontWeight: 700,
+              backgroundColor: isPlayerConnectedToHost ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+              color: isPlayerConnectedToHost ? '#10b981' : '#ef4444',
+              border: `1px solid ${isPlayerConnectedToHost ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+            }}>
+              {isPlayerConnectedToHost ? <Wifi size={14} /> : <WifiOff size={14} />}
+              {isPlayerConnectedToHost ? 'Connected to Host Laptop' : 'Connecting to Host...'}
+            </span>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: '8px' }}>
