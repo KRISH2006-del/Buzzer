@@ -10,7 +10,7 @@ import {
   sendPlayerAction, 
   broadcastLocal 
 } from './utils/sync';
-import { Shield, Users, Radio, Smartphone, ExternalLink, MonitorPlay, Wifi, WifiOff } from 'lucide-react';
+import { Shield, Users, Radio, Smartphone, ExternalLink, MonitorPlay, Wifi, WifiOff, Lock, Key, Check, AlertCircle } from 'lucide-react';
 
 export default function App() {
   // Navigation mode: 'select' | 'host' | 'player' | 'stage'
@@ -21,6 +21,15 @@ export default function App() {
     if (params.get('mode') === 'stage') return 'stage';
     return 'select';
   });
+
+  // Host PIN Authentication State
+  const [isHostAuthenticated, setIsHostAuthenticated] = useState(() => {
+    return sessionStorage.getItem('buzzerx_host_auth') === 'true';
+  });
+
+  const [inputPin, setInputPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  const HOST_PIN = '1234'; // Default Host Passcode
 
   // Global Room ID (default 'live' or from URL ?room=xyz)
   const [roomId, setRoomId] = useState(() => {
@@ -72,7 +81,6 @@ export default function App() {
   // Initialize WebRTC P2P Sync engine based on active View Mode
   useEffect(() => {
     if (viewMode === 'host' || viewMode === 'select' || viewMode === 'stage') {
-      // Host Laptop initializes WebRTC Peer Room to receive mobile players
       initPeerHostRoom(
         roomId,
         (actionType, payload) => {
@@ -84,7 +92,6 @@ export default function App() {
         }
       );
     } else if (viewMode === 'player') {
-      // Mobile Player connects to Host Laptop Peer Room
       initPeerPlayerRoom(
         roomId,
         (newState) => {
@@ -131,7 +138,6 @@ export default function App() {
     const currentState = stateRef.current;
     const now = Date.now();
 
-    // Prevent duplicate buzzes from same team in same round
     if (currentState.buzzerPresses.some(p => p.teamId === payload.teamId)) return;
 
     const dateObj = new Date(now);
@@ -247,6 +253,18 @@ export default function App() {
     }
   };
 
+  const handleVerifyHostPin = (e) => {
+    e.preventDefault();
+    if (inputPin.trim() === HOST_PIN) {
+      setIsHostAuthenticated(true);
+      sessionStorage.setItem('buzzerx_host_auth', 'true');
+      setPinError('');
+      setInputPin('');
+    } else {
+      setPinError('Incorrect Host PIN! Access Denied.');
+    }
+  };
+
   const openPlayerWindow = () => {
     window.open(`${window.location.origin}?mode=player&room=${roomId}`, '_blank', 'width=450,height=750');
   };
@@ -289,7 +307,7 @@ export default function App() {
           </span>
 
           {/* Connection Status Badge */}
-          {viewMode === 'host' && (
+          {viewMode === 'host' && isHostAuthenticated && (
             <span style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -325,40 +343,35 @@ export default function App() {
           )}
         </div>
 
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button
-            className={`btn ${viewMode === 'host' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ padding: '6px 14px', fontSize: '0.85rem' }}
-            onClick={() => setViewMode('host')}
-          >
-            <Shield size={15} /> Host Screen
-          </button>
+        {/* Hide Host Navigation Controls when in Player View so players cannot switch to Host */}
+        {viewMode !== 'player' && (
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              className={`btn ${viewMode === 'host' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ padding: '6px 14px', fontSize: '0.85rem' }}
+              onClick={() => setViewMode('host')}
+            >
+              <Shield size={15} /> Host Screen
+            </button>
 
-          <button
-            className={`btn ${viewMode === 'stage' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ padding: '6px 14px', fontSize: '0.85rem' }}
-            onClick={() => setViewMode('stage')}
-          >
-            <MonitorPlay size={15} /> Projector Stage
-          </button>
+            <button
+              className={`btn ${viewMode === 'stage' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ padding: '6px 14px', fontSize: '0.85rem' }}
+              onClick={() => setViewMode('stage')}
+            >
+              <MonitorPlay size={15} /> Projector Stage
+            </button>
 
-          <button
-            className={`btn ${viewMode === 'player' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ padding: '6px 14px', fontSize: '0.85rem' }}
-            onClick={() => setViewMode('player')}
-          >
-            <Smartphone size={15} /> Player View
-          </button>
-
-          <button
-            className="btn btn-secondary"
-            style={{ padding: '6px 10px', fontSize: '0.85rem' }}
-            onClick={openPlayerWindow}
-            title="Open a new Player window to test multi-tab / multi-screen sync"
-          >
-            <ExternalLink size={15} /> Player Window
-          </button>
-        </div>
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '6px 10px', fontSize: '0.85rem' }}
+              onClick={openPlayerWindow}
+              title="Open a new Player window to test multi-tab / multi-screen sync"
+            >
+              <ExternalLink size={15} /> Player Window
+            </button>
+          </div>
+        )}
       </nav>
 
       {/* Main View Router */}
@@ -389,9 +402,9 @@ export default function App() {
                 onClick={() => setViewMode('host')}
               >
                 <Shield size={36} color="#6366f1" style={{ marginBottom: '14px' }} />
-                <h2 style={{ fontSize: '1.4rem', marginBottom: '8px' }}>Host Control Hub</h2>
+                <h2 style={{ fontSize: '1.4rem', marginBottom: '8px' }}>Host Control Hub (PIN Protected)</h2>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '20px' }}>
-                  Manage dynamic teams, control buzzer rounds, view live millisecond timestamps, and award scores with keyboard shortcuts.
+                  Manage dynamic teams, control buzzer rounds, view live millisecond timestamps, and award scores. Requires Host PIN.
                 </p>
                 <button className="btn btn-primary" style={{ width: '100%' }}>
                   Launch Host Dashboard &rarr;
@@ -432,18 +445,76 @@ export default function App() {
         )}
 
         {viewMode === 'host' && (
-          <HostDashboard
-            state={state}
-            socket={socket}
-            onAddTeam={handleAddTeam}
-            onUpdateTeam={handleUpdateTeam}
-            onDeleteTeam={handleDeleteTeam}
-            onUpdateScore={handleUpdateScore}
-            onResetBuzzer={handleResetBuzzer}
-            onToggleLock={handleToggleLock}
-            onStartCountdown={handleStartCountdown}
-            onOpenStageView={openStageWindow}
-          />
+          isHostAuthenticated ? (
+            <HostDashboard
+              state={state}
+              socket={socket}
+              onAddTeam={handleAddTeam}
+              onUpdateTeam={handleUpdateTeam}
+              onDeleteTeam={handleDeleteTeam}
+              onUpdateScore={handleUpdateScore}
+              onResetBuzzer={handleResetBuzzer}
+              onToggleLock={handleToggleLock}
+              onStartCountdown={handleStartCountdown}
+              onOpenStageView={openStageWindow}
+            />
+          ) : (
+            /* Host PIN Gate Screen */
+            <div style={{ maxWidth: '420px', margin: '60px auto', padding: '0 20px' }}>
+              <div className="glass-panel" style={{ padding: '36px 28px', textAlign: 'center' }}>
+                <div style={{
+                  width: '64px',
+                  height: '64px',
+                  borderRadius: '50%',
+                  backgroundColor: 'rgba(99, 102, 241, 0.15)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: '20px'
+                }}>
+                  <Lock size={32} color="#6366f1" />
+                </div>
+
+                <h2 style={{ fontSize: '1.6rem', fontWeight: 800, marginBottom: '8px' }}>Host Passcode Required</h2>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '24px' }}>
+                  Please enter the Host PIN to access buzzer controls, scores, and round management.
+                </p>
+
+                <form onSubmit={handleVerifyHostPin}>
+                  <div style={{ marginBottom: '16px' }}>
+                    <input
+                      type="password"
+                      className="form-input"
+                      placeholder="Enter 4-Digit Host PIN"
+                      value={inputPin}
+                      onChange={(e) => setInputPin(e.target.value)}
+                      style={{ textAlign: 'center', fontSize: '1.3rem', letterSpacing: '0.3em', fontWeight: 800 }}
+                      autoFocus
+                    />
+                  </div>
+
+                  {pinError && (
+                    <div style={{ color: '#ef4444', fontSize: '0.85rem', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                      <AlertCircle size={16} /> {pinError}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setViewMode('player')}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
+                      <Key size={16} /> Unlock Host
+                    </button>
+                  </div>
+                </form>
+
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '20px' }}>
+                  💡 Default Host Passcode: <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#f59e0b' }}>1234</span>
+                </p>
+              </div>
+            </div>
+          )
         )}
 
         {viewMode === 'stage' && (
