@@ -195,9 +195,6 @@ export default function PlayerView({ state, socket, onPressBuzzer, onAddTeam }) 
           </div>
         </div>
 
-        <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '0.8rem' }} onClick={() => setSelectedTeamId('')}>
-          Switch Team
-        </button>
       </div>
 
       {/* Round & Countdown Status Header */}
